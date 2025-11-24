@@ -625,6 +625,7 @@ class Review(db.Model):
     # Relationships
     trip_id = db.Column(db.Integer, db.ForeignKey("trip.id"), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    photos = db.relationship("ReviewPhoto", backref="review", lazy=True, cascade="all, delete-orphan")
     
     # Unique constraint: one review per user per trip
     __table_args__ = (db.UniqueConstraint('trip_id', 'user_id', name='unique_trip_user_review'),)
@@ -662,9 +663,38 @@ class Review(db.Model):
         db.session.delete(self)
         db.session.commit()
     
+    def add_photo(self, photo_url, caption=None):
+        """Add a photo to the review"""
+        photo = ReviewPhoto(photo_url=photo_url, caption=caption, review_id=self.id)
+        db.session.add(photo)
+        db.session.commit()
+        return photo
+    
     def get_star_display(self):
         """Get star display string"""
         return "★" * self.rating + "☆" * (5 - self.rating)
     
     def __repr__(self):
         return f"<Review Trip:{self.trip_id} User:{self.user_id} Rating:{self.rating}>"
+
+#==========================================================================================================
+
+class ReviewPhoto(db.Model):
+    """Photos attached to reviews"""
+    __tablename__ = "review_photo"
+    
+    id = db.Column(db.Integer, primary_key=True)
+    photo_url = db.Column(db.String(500), nullable=False)
+    caption = db.Column(db.String(500))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    review_id = db.Column(db.Integer, db.ForeignKey("review.id"), nullable=False)
+    
+    def delete(self):
+        """Delete photo"""
+        db.session.delete(self)
+        db.session.commit()
+    
+    def __repr__(self):
+        return f"<ReviewPhoto {self.id} for Review {self.review_id}>"
