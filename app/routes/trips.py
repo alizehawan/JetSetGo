@@ -1,9 +1,18 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash, session, jsonify
-from app.models import Trip, ItineraryItem, Expense, User, PlannedBudget, FavoriteDestination, TripDestination
+from app.models import Trip, ItineraryItem, Expense, User, PlannedBudget, FavoriteDestination, TripDestination, Review, ReviewPhoto
 from werkzeug.security import check_password_hash
+from werkzeug.utils import secure_filename
 from datetime import datetime
+import os
 
 trips_bp = Blueprint("trips", __name__)
+
+# Configure upload folder
+UPLOAD_FOLDER = 'app/static/uploads/reviews'
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 #==========================================================================================================
 # TRIPS ROUTES
@@ -691,3 +700,200 @@ def add_destination_from_favorites(trip_id):
         flash(f"Added '{favorite_destination.name}' to trip!", "success")
 
     return redirect(url_for("trips.trip_detail", trip_id=trip_id))
+
+#==========================================================================================================
+# REVIEW ROUTES
+#==========================================================================================================
+
+@trips_bp.route("/reviews")
+def view_all_reviews():
+    """View all reviews from all trips"""
+    if "user_id" not in session:
+        flash("Please log in to view reviews", "warning")
+        return redirect(url_for("auth.login"))
+    
+    # Get all reviews ordered by most recent
+    reviews = Review.query.order_by(Review.created_at.desc()).all()
+    return render_template("reviews.html", reviews=reviews)
+
+#==========================================================================================================
+
+@trips_bp.route("/trip/<int:trip_id>/reviews")
+def trip_reviews(trip_id):
+    """View all reviews for a specific trip"""
+    trip = Trip.query.get_or_404(trip_id)
+    return render_template("trip_reviews.html", trip=trip)
+
+#==========================================================================================================
+
+@trips_bp.route("/trip/<int:trip_id>/review/add", methods=["GET", "POST"])
+def add_review(trip_id):
+    """Add a review for a trip"""
+    if "user_id" not in session:
+        flash("Please log in to add a review", "warning")
+        return redirect(url_for("auth.login"))
+
+    trip = Trip.query.get_or_404(trip_id)
+    user_id = session.get("user_id")
+
+    # Check if user already reviewed this trip
+    existing_review = Review.query.filter_by(trip_id=trip_id, user_id=user_id).first()
+    if existing_review:
+        flash("You have already reviewed this trip. You can edit your existing review.", "info")
+        return redirect(url_for("trips.edit_review", review_id=existing_review.id))
+
+    if request.method == "POST":
+        rating = request.form.get("rating", type=int)
+        comment = request.form.get("comment")
+
+        if not rating or rating < 1 or rating > 5:
+            flash("Please select a rating between 1 and 5 stars", "danger")
+            return redirect(url_for("trips.add_review", trip_id=trip_id))
+
+        try:
+            review = Review.create(trip_id=trip_id, user_id=user_id, rating=rating, comment=comment)
+            
+            # Handle photo uploads
+            if 'photos' in request.files:
+                files = request.files.getlist('photos')
+                for file in files:
+                    if file and file.filename and allowed_file(file.filename):
+                        filename = secure_filename(f"{datetime.now().timestamp()}_{file.filename}")
+                        
+                        # Create upload directory if it doesn't exist
+                        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+                        
+                        filepath = os.path.join(UPLOAD_FOLDER, filename)
+                        file.save(filepath)
+                        
+                        # Store relative path for URL
+                        photo_url = f"/static/uploads/reviews/{filename}"
+                        review.add_photo(photo_url)
+
+            flash("Review added successfully!", "success")
+            return redirect(url_for("trips.view_all_reviews"))
+
+        except ValueError as e:
+            flash(str(e), "danger")
+            return redirect(url_for("trips.add_review", trip_id=trip_id))
+
+    return render_template("add_review.html", trip=trip)
+
+#==========================================================================================================
+
+@trips_bp.route("/review/<int:review_id>/edit", methods=["GET", "POST"])
+def edit_review(review_id):
+    """Edit an existing review"""
+    if "user_id" not in session:
+        flash("Please log in to edit reviews", "warning")
+        return redirect(url_for("auth.login"))
+
+    review = Review.query.get_or_404(review_id)
+    user_id = session.get("user_id")
+
+    # Check if user owns this review
+    if review.user_id != user_id:
+        flash("You can only edit your own reviews", "danger")
+        return redirect(url_for("trips.view_all_reviews"))
+
+    if request.method == "POST":
+        rating = request.form.get("rating", type=int)
+        comment = request.form.get("comment")
+
+        if not rating or rating < 1 or rating > 5:
+            flash("Please select a rating between 1 and 5 stars", "danger")
+            return redirect(url_for("trips.edit_review", review_id=review_id))
+
+        try:
+            review.update(rating=rating, comment=comment)
+            
+            # Handle new photo uploads
+            if 'photos' in request.files:
+                files = request.files.getlist('photos')
+                for file in files:
+                    if file and file.filename and allowed_file(file.filename):
+                        filename = secure_filename(f"{datetime.now().timestamp()}_{file.filename}")
+                        
+                        # Create upload directory if it doesn't exist
+                        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+                        
+                        filepath = os.path.join(UPLOAD_FOLDER, filename)
+                        file.save(filepath)
+                        
+                        # Store relative path for URL
+                        photo_url = f"/static/uploads/reviews/{filename}"
+                        review.add_photo(photo_url)
+
+            flash("Review updated successfully!", "success")
+            return redirect(url_for("trips.view_all_reviews"))
+
+        except ValueError as e:
+            flash(str(e), "danger")
+            return redirect(url_for("trips.edit_review", review_id=review_id))
+
+    return render_template("edit_review.html", review=review)
+
+#==========================================================================================================
+
+@trips_bp.route("/review/<int:review_id>/delete", methods=["POST"])
+def delete_review(review_id):
+    """Delete a review"""
+    if "user_id" not in session:
+        flash("Please log in", "warning")
+        return redirect(url_for("auth.login"))
+
+    review = Review.query.get_or_404(review_id)
+    user_id = session.get("user_id")
+
+    # Check if user owns this review
+    if review.user_id != user_id:
+        flash("You can only delete your own reviews", "danger")
+        return redirect(url_for("trips.view_all_reviews"))
+
+    # Delete associated photos from filesystem
+    for photo in review.photos:
+        try:
+            photo_path = os.path.join('app', photo.photo_url.lstrip('/'))
+            if os.path.exists(photo_path):
+                os.remove(photo_path)
+        except Exception as e:
+            print(f"Error deleting photo: {e}")
+
+    review.delete()
+    flash("Review deleted successfully!", "success")
+    return redirect(url_for("trips.view_all_reviews"))
+
+#==========================================================================================================
+
+@trips_bp.route("/review/<int:review_id>/photo/<int:photo_id>/delete", methods=["POST"])
+def delete_review_photo(review_id, photo_id):
+    """Delete a photo from a review"""
+    if "user_id" not in session:
+        flash("Please log in", "warning")
+        return redirect(url_for("auth.login"))
+
+    review = Review.query.get_or_404(review_id)
+    photo = ReviewPhoto.query.get_or_404(photo_id)
+    user_id = session.get("user_id")
+
+    # Check if user owns this review
+    if review.user_id != user_id:
+        flash("You can only delete photos from your own reviews", "danger")
+        return redirect(url_for("trips.view_all_reviews"))
+
+    # Check if photo belongs to this review
+    if photo.review_id != review_id:
+        flash("Invalid photo", "danger")
+        return redirect(url_for("trips.edit_review", review_id=review_id))
+
+    # Delete photo from filesystem
+    try:
+        photo_path = os.path.join('app', photo.photo_url.lstrip('/'))
+        if os.path.exists(photo_path):
+            os.remove(photo_path)
+    except Exception as e:
+        print(f"Error deleting photo: {e}")
+
+    photo.delete()
+    flash("Photo deleted successfully!", "success")
+    return redirect(url_for("trips.edit_review", review_id=review_id))
